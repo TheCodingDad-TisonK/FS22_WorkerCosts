@@ -1,4 +1,7 @@
 # FS25 Realistic Worker Costs Mod
+![Downloads](https://img.shields.io/github/downloads/TheCodingDad-TisonK/FS22_WorkerCosts/total?style=for-the-badge)
+![Release](https://img.shields.io/github/v/release/TheCodingDad-TisonK/FS22_WorkerCosts?style=for-the-badge)
+![License](https://img.shields.io/badge/license-All%20Rights%20Reserved-red?style=for-the-badge)
 
 ## Overview
 Adds realistic hourly or per-hectare wage costs for hired workers in Farming Simulator 25. This mod introduces ongoing expenses for using workers, making farm management more challenging and strategic.
@@ -86,4 +89,5 @@ Type these in the console (`~` key):
 For bugs or suggestions, please report on mod hosting sites or contact the author.
 
 ## License
+
 All rights reserved. Do not redistribute or claim as your own work.
