@@ -24,6 +24,11 @@ local PAGE_WORKERS = 3
 local _registered = false
 local _legacyStoodDown = false
 local _subnavSeeded = false
+-- BUILD 22:42 (George CLOSED DESIGN 21:26): the roster snapshot behind the last paint, so a
+-- Hire / Fire click on row n resolves to the entry that was on that row when it was clicked.
+local _lastSnap = nil
+local CREW_ROWS = 8      -- roster rows 1-8: crew (wcBtnFire1..8)
+local RECRUIT_ROWS = 4   -- roster rows 11-14: recruits (wcBtnHire1..4); row 9 blank, row 10 title
 
 local function tr(key, fallback)
     local modEnv = g_modEnvironments and g_modEnvironments[WC_RF_MOD_NAME]
@@ -103,6 +108,10 @@ local function setVis(el, visible)
     end
 end
 
+-- BUILD 00:06: the engine text colour setter, captured BEFORE the element helper below shadows
+-- the name (the 20:36 Market crash). The chip draw wrap resets the render colour with this one.
+local engineSetTextColor = setTextColor
+
 local function setTextColor(el, r, g, b, a)
     if el ~= nil and type(el.setTextColor) == "function" then
         el:setTextColor(r, g, b, a)
@@ -159,19 +168,11 @@ local function getPageIndex(container)
 end
 
 --- Lower WC side box: page how-to + consolidated About (no Version prefix; no About tab page).
+--- BUILD 18:26 (George CLOSED DESIGN 17:59): one page, one how-to (fallback-only key, like the
+--- three per-page keys it replaces; none of them live in the translation files).
 local function paintSideInfo(container)
-    local idx = getPageIndex(container)
-    local howTo
-    if idx == PAGE_WAGES then
-        howTo = tr("rf_pda_side_info_wc_wages",
-            "Wages\n\nAI pay: on/off, Hourly or Per hectare, Wage Level, notices.\nEscape on salary dialog = Pay (not defer). Reset = defaults.\nHire/fire in Worker Manager / Farm Tablet.")
-    elseif idx == PAGE_WORKERS then
-        howTo = tr("rf_pda_side_info_wc_workers",
-            "Workers\n\nCrew board: status, pinned, trusted, level, fatigue.\nToday's recruits and hires left. Read-only here.\nHire/fire in Worker Manager / Farm Tablet.")
-    else
-        howTo = tr("rf_pda_side_info_wc_dashboard",
-            "Dashboard\n\nWage mode, rate, active AI, next settle, month accrued.\nNames = on the clock now. Full roster on Workers.\nHire/fire in Worker Manager / Farm Tablet.")
-    end
+    local howTo = tr("rf_pda_side_info_wc",
+        "Worker Costs\n\nLeft: AI pay on/off, Hourly or Per hectare, Wage Level, notices, salary; the rate and Reset under them. Escape on the salary dialog = Pay (not defer).\nRight: status, active AI, next settle, hires left, cost per worker, interval total, month and estimate, crew; the crew board (status, pinned, trusted, level, fatigue) below.\nHire and Fire with the buttons beside the crew and recruit rows. Assign in Farm Tablet.")
     local about = tr("rf_pda_side_info_wc_about",
         "About: Midnight settle (fair 1x-120x). Settings per save; MP follows host.\nClients wait for host sync. Wage Level scales Hourly / Per hectare.\nPro-Staff links show when loaded.")
     local body = howTo .. "\n\n" .. about
@@ -181,7 +182,7 @@ local function paintSideInfo(container)
     setText(bodyEl, body)
 end
 
-local LIST_MAX_LINES = 16
+local LIST_MAX_LINES = 14  -- BUILD 12:05: fourteen declared row Texts wcRosterRow1..14 on the chip Ys
 
 local function getRosterSnap(mgr)
     if mgr == nil or type(mgr.getRosterSnapshot) ~= "function" then
@@ -248,32 +249,107 @@ local function formatRecruitLine(r)
     return string.format(tr("wc_rf_pda_recruit_line", "#%d %s · %s · %s"), slot, name, level, cost)
 end
 
+-- ============================================================
+-- BUILD 00:06 (LAW Wizard Esc overlay-chip buttons 2026-09-05, George CLOSED DESIGN 23:12): every
+-- created button on this page paints as a vanilla key chip, the CsRfPdaGuest setPivotBtn /
+-- renderPivotChip / wirePivotChipPaint chain vendored. Idle = dark plate, lime text; latched =
+-- lime plate, dark text; gated = grey, no lime. The Button keeps its own hit box and onClick
+-- (RF_CsPivotBtn: buttonActivate chrome, hideKeyboardGlyph, no global-action trigger, so SPACE
+-- never confirms); its TextElement text stays "" so the chip is the only paint.
+-- ============================================================
+local CHIP_TEXT = { 0.22323, 0.40724, 0.00368 }
+local CHIP_BG = { 0.00913, 0.01033, 0.00651 }
+local CHIP_GATED_TEXT = { 0.62, 0.64, 0.66 }
+local CHIP_GATED_BG = { 0.06, 0.06, 0.065 }
+
+--- Store the chip state on the Button and blank its text. enabled=false paints the grey chip
+--- and disables the Button; latched inverts the live chip.
+local function setChipBtn(el, label, enabled, latched)
+    if el == nil then return end
+    if type(el.setText) == "function" then el:setText("") end
+    el.rfChipLabel = label
+    el.rfChipEnabled = enabled and true or false
+    el.rfChipLatched = latched and true or false
+    if type(el.setDisabled) == "function" then el:setDisabled(not enabled) end
+end
+
+local function renderChip(el, overlay)
+    local label = el.rfChipLabel
+    if label == nil or label == "" then return end
+    if el.absPosition == nil or el.absSize == nil or el.visible == false then return end
+    local height = el.absSize[2] * 0.72
+    if height <= 0 then return end
+    local t, b, ta, ba
+    if el.rfChipEnabled and el.rfChipLatched then
+        t, b, ta, ba = CHIP_BG, CHIP_TEXT, 1.0, 1.0
+    elseif el.rfChipEnabled then
+        t, b, ta, ba = CHIP_TEXT, CHIP_BG, 1.0, 1.0
+    else
+        t, b, ta, ba = CHIP_GATED_TEXT, CHIP_GATED_BG, 0.45, 0.55
+    end
+    overlay:setColor(t[1], t[2], t[3], ta, b[1], b[2], b[3], ba)
+    local width = overlay:getButtonWidth(label, height)
+    local x = el.absPosition[1] + (el.absSize[1] - width) * 0.5
+    local y = el.absPosition[2] + (el.absSize[2] - height) * 0.5
+    overlay:renderButton(label, x, y, height, true)
+end
+
+--- Wrap one already-visible parent's draw once (guard flag on the element) so the listed chips
+--- repaint every frame the parent draws. lookup(root, id) resolves each Button. The colour reset
+--- at the end is the ENGINE global captured above, never an element helper.
+local function wireChipPaint(parent, ids, flag, lookup)
+    if parent == nil or parent[flag] then return end
+    parent[flag] = true
+    local prevDraw = parent.draw
+    function parent:draw(...)
+        if prevDraw ~= nil then prevDraw(self, ...) end
+        local idm = g_inputDisplayManager
+        if idm == nil or type(idm.getKeyboardKeyOverlay) ~= "function" then return end
+        local overlay = idm:getKeyboardKeyOverlay()
+        if overlay == nil or type(overlay.renderButton) ~= "function" then return end
+        for _, id in ipairs(ids) do
+            local el = lookup(self, id)
+            if el ~= nil then
+                pcall(renderChip, el, overlay)
+            end
+        end
+        setTextBold(false)
+        setTextAlignment(RenderText.ALIGN_LEFT)
+        setTextVerticalAlignment(RenderText.VERTICAL_ALIGN_BASELINE)
+        if type(engineSetTextColor) == "function" then
+            engineSetTextColor(1, 1, 1, 1)
+        end
+    end
+end
+
+local WC_CHIP_IDS = { "wcBtnWageReset",
+    "wcBtnFire1", "wcBtnFire2", "wcBtnFire3", "wcBtnFire4", "wcBtnFire5", "wcBtnFire6", "wcBtnFire7", "wcBtnFire8",
+    "wcBtnHire1", "wcBtnHire2", "wcBtnHire3", "wcBtnHire4" }
+
+--- The wrap goes on wcPageDashboard, the page every card and button sits in (visible whenever
+--- Worker Costs is the active module); never a new frame over the wage MTOs.
+local function wireWcChipPaint(container)
+    local page = findDescendant(container, "wcPageDashboard")
+    wireChipPaint(page, WC_CHIP_IDS, "_rfWcChipWired", function(root, id)
+        return findDescendant(root, id) or findDescendant(container, id)
+    end)
+end
+
+--- BUILD 22:42 (George CLOSED DESIGN 21:26): fixed rows, so the declared Hire / Fire buttons
+--- line up with the text. Rows 1-8 = crew (workers[1..8], blank when short, "Showing 8 of N"
+--- when long), row 9 blank, row 10 the recruits title, rows 11-14 = recruits[1..4] (blank when
+--- short). crewBudget is CREW_ROWS always; LIST_MAX_LINES 14 = 8 + 1 + 1 + 4.
 local function buildWorkersListText(snap)
     local lines = {}
     local workers = (snap and snap.workers) or {}
     local recruits = (snap and snap.recruits) or {}
     local crewTotal = #workers
-    local recruitLines = {}
-    if #recruits > 0 then
-        table.insert(recruitLines, tr("wc_rf_pda_recruits_title", "Today's recruits"))
-        for _, r in ipairs(recruits) do
-            table.insert(recruitLines, formatRecruitLine(r))
-        end
-    else
-        table.insert(recruitLines, tr("wc_rf_pda_no_recruits", "No recruits today"))
-    end
-    local recruitNeed = #recruitLines
-    local sep = 1 -- blank line between crew band and recruits
-    local crewBudget = LIST_MAX_LINES - recruitNeed - sep
-    if crewBudget < 1 then
-        crewBudget = 1
-    end
 
     local showingClause = nil
     if crewTotal == 0 then
         table.insert(lines, tr("wc_rf_pda_no_staff", "No staff yet"))
     else
-        local paintN = math.min(crewTotal, crewBudget)
+        local paintN = math.min(crewTotal, CREW_ROWS)
         if paintN < crewTotal then
             showingClause = string.format(tr("wc_rf_pda_showing_n_of_m", "Showing %d of %d"), paintN, crewTotal)
         end
@@ -281,78 +357,63 @@ local function buildWorkersListText(snap)
             table.insert(lines, formatCrewLine(workers[i]))
         end
     end
+    while #lines < CREW_ROWS do
+        table.insert(lines, "")
+    end
 
     table.insert(lines, "")
-    for _, rl in ipairs(recruitLines) do
-        table.insert(lines, rl)
-    end
-
-    -- Cap honesty: if somehow over MaxLines, trim crew first (recruits preferred).
-    while #lines > LIST_MAX_LINES and #lines > recruitNeed + 1 do
-        table.remove(lines, 1)
-        if showingClause == nil and crewTotal > 0 then
-            showingClause = string.format(tr("wc_rf_pda_showing_n_of_m", "Showing %d of %d"),
-                math.max(0, LIST_MAX_LINES - recruitNeed - 1), crewTotal)
+    if #recruits > 0 then
+        table.insert(lines, tr("wc_rf_pda_recruits_title", "Today's recruits"))
+        for s = 1, RECRUIT_ROWS do
+            table.insert(lines, recruits[s] ~= nil and formatRecruitLine(recruits[s]) or "")
         end
+    else
+        table.insert(lines, tr("wc_rf_pda_no_recruits", "No recruits today"))
     end
 
-    return table.concat(lines, "\n"), showingClause
+    while #lines > LIST_MAX_LINES do
+        table.remove(lines)
+    end
+
+    return lines, showingClause
 end
 
-local function seedSubnav(container)
-    -- RESTORE: seed left page MTO once; never setState(..., true).
-    if _subnavSeeded then
-        return
+--- BUILD 12:05 (George CLOSED DESIGN 09:45): one declared Text per roster row (wcRosterRow1..14,
+--- 460x22, one line, clip no wrap) at the same page Ys as the Hire / Fire chips, so a button
+--- always sits on the row it acts on. Rows past the end of lines are blanked.
+local function paintRosterRows(container, lines)
+    lines = lines or {}
+    for i = 1, LIST_MAX_LINES do
+        setText(findDescendant(container, "wcRosterRow" .. i), lines[i] or "")
     end
-    local page = getHostPage()
-    local sel = getPageSelector(container)
-    if sel == nil then
-        return
-    end
-    sel.disableButtonsOnSingleText = false
-    sel.hideLeftRightButtons = false
-    if sel.setVisible then
-        sel:setVisible(true)
-    end
-    if sel.setCanChangeState then
-        sel:setCanChangeState(true)
-    end
-    if sel.setDisabled then
-        sel:setDisabled(false)
-    end
-    local texts = {
-        tr("wc_rf_pda_page_dashboard", "Dashboard"),
-        tr("wc_rf_pda_page_wages", "Wages"),
-        tr("wc_rf_pda_page_workers", "Workers"),
-    }
-    local idx = clampPageIndex(page and page.wcSubPageIndex)
-    if page ~= nil then
-        page.wcSubPageIndex = idx
-        page._wcWageRefreshing = true
-        page._wcSubnavSeeding = true
-    end
-    if sel.setTexts then
-        sel:setTexts(texts)
-    end
-    if sel.setState then
-        sel:setState(idx, false)
-    end
-    if sel.updateAbsolutePosition then
-        sel:updateAbsolutePosition()
-    end
-    if page ~= nil then
-        page._wcSubnavSeeding = false
-        page._wcWageRefreshing = false
-        page._wcSubnavSeeded = true
-        if page._ensureWcSubnavArrowsVisible then
-            page:_ensureWcSubnavArrowsVisible()
-        end
-        if page._syncWcSubPageVisibility then
-            page:_syncWcSubPageVisibility()
-        end
-    end
-    _subnavSeeded = true
 end
+
+--- The twelve declared buttons: Fire i shows when crew row i carries a worker with a uuid, Hire s
+--- when recruit row s carries a recruit. Everything hidden when the roster is not authoritative
+--- (snap nil). Text is set on show only; RF_FwPagerBtn has no inputAction, so no key chip.
+local function paintRosterButtons(container, snap)
+    local workers = (snap and snap.workers) or {}
+    local recruits = (snap and snap.recruits) or {}
+    for i = 1, CREW_ROWS do
+        local el = findDescendant(container, "wcBtnFire" .. i)
+        local w = workers[i]
+        local on = snap ~= nil and w ~= nil and w.uuid ~= nil
+        setVis(el, on)
+        if on then
+            setChipBtn(el, tr("wc_rf_pda_btn_fire", "Fire"), true, false)
+        end
+    end
+    for s = 1, RECRUIT_ROWS do
+        local el = findDescendant(container, "wcBtnHire" .. s)
+        local on = snap ~= nil and recruits[s] ~= nil
+        setVis(el, on)
+        if on then
+            setChipBtn(el, tr("wc_rf_pda_btn_hire", "Hire"), true, false)
+        end
+    end
+end
+
+-- BUILD 18:26: seedSubnav (the three-page picker seed) is gone; wcSubnavSelector stays hidden.
 
 local function paintDashboard(container, lightOnly)
     local mgr = getMgr()
@@ -376,26 +437,17 @@ local function paintDashboard(container, lightOnly)
         else
             setTextColor(statusEl, 1.0, 0.35, 0.35, 1)
         end
-        setText(findDescendant(container, "wcDashMode"),
-            labeled(tr("wc_label_cost_mode", "Cost Mode"), settings:getCostModeName()))
-        setText(findDescendant(container, "wcDashWage"),
-            labeled(tr("wc_label_wage_level", "Wage Level"), settings:getWageLevelName()))
-        local rate = settings:getWageRate()
-        local rateText = settings.costMode == Settings.COST_MODE_HOURLY
-            and (formatMoney(rate) .. " / h") or (formatMoney(rate) .. " / ha")
-        setText(findDescendant(container, "wcDashRate"),
-            labeled(tr("wc_label_current_rate", "Rate"), rateText))
+        -- BUILD 18:26: mode, wage level and rate are carried by the wage MTOs and wcWageBigRate on
+        -- the same page now (wcDashMode / wcDashWage / wcDashRate are gone from the door XML).
     end
 
     local workers = ws:getActiveWorkers()
     local workerCount = #workers
-    local namesEl = findDescendant(container, "wcDashWorkerNames")
 
     if not auth then
         setText(findDescendant(container, "wcDashWorkers"),
             labeled(tr("wc_label_active_workers", "Active Workers"), awaitingSyncText()))
         setText(findDescendant(container, "wcDashEstimate"), awaitingSyncText())
-        setText(namesEl, awaitingSyncText())
     else
         setText(findDescendant(container, "wcDashWorkers"),
             labeled(tr("wc_label_active_workers", "Active Workers"), tostring(workerCount)))
@@ -412,28 +464,8 @@ local function paintDashboard(container, lightOnly)
         setText(findDescendant(container, "wcDashEstimate"),
             string.format(tr("wc_rf_pda_month_est", "Month: %s · Est: %s"),
                 formatMoney(monthAccrued), formatMoney(est)))
-
-        -- Stage-7: on-the-clock names only (full roster lives on Workers).
-        if workerCount > 0 then
-            local names = {}
-            local roster = mgr.workerRoster
-            for _, w in ipairs(workers) do
-                local label = w.name
-                if w.vehicleName ~= nil and w.vehicleName ~= w.name then
-                    label = string.format("%s (%s)", w.name, w.vehicleName)
-                end
-                if roster then
-                    local rw = roster:getWorkerByVehicle(tostring(w.vehicle))
-                    if rw and WorkerRoster and WorkerRoster.levelName then
-                        label = string.format("[%s] %s", WorkerRoster.levelName(rw.level), label)
-                    end
-                end
-                table.insert(names, label)
-            end
-            setText(namesEl, table.concat(names, "\n"))
-        else
-            setText(namesEl, tr("wc_no_workers", "No active workers"))
-        end
+        -- BUILD 18:26: the on-the-clock names list (wcDashWorkerNames) is gone; the full roster
+        -- sits on the same page in the wcRosterRow1..14 texts (paintWorkers).
     end
 
     local remaining = 0
@@ -541,10 +573,8 @@ local function syncWageWidgets(container)
                 "Per hectare: billed by area worked since last settle. Wage Level sets the rate. Settles at midnight.")
                 .. "\n" .. escPays)
     end
-    local resetBtn = findDescendant(container, "wcBtnWageReset")
-    if resetBtn and resetBtn.setText then
-        resetBtn:setText(tr("button_reset", "Reset"))
-    end
+    -- BUILD 00:06: Reset is an overlay chip (RF_CsPivotBtn, no SPACE); the label rides the chip.
+    setChipBtn(findDescendant(container, "wcBtnWageReset"), tr("button_reset", "Reset"), true, false)
 
     if page ~= nil then
         page._wcWageRefreshing = false
@@ -609,8 +639,9 @@ end
 local function paintWorkers(container, lightOnly)
     local mgr = getMgr()
     if mgr == nil or mgr.settings == nil or mgr.workerSystem == nil then
-        setText(findDescendant(container, "wcStatsWorkerList"),
-            tr("wc_rf_pda_empty", "Worker Costs is not ready yet."))
+        paintRosterRows(container, { tr("wc_rf_pda_empty", "Worker Costs is not ready yet.") })
+        _lastSnap = nil
+        paintRosterButtons(container, nil)
         return
     end
     local settings = mgr.settings
@@ -618,14 +649,7 @@ local function paintWorkers(container, lightOnly)
     local snap = getRosterSnap(mgr)
     local auth = isAuthoritative(snap)
 
-    if not lightOnly then
-        setText(findDescendant(container, "wcStatsMode"),
-            labeled(tr("wc_label_cost_mode", "Cost Mode"), settings:getCostModeName()))
-        setText(findDescendant(container, "wcStatsWage"),
-            labeled(tr("wc_label_wage_level", "Wage Level"), settings:getWageLevelName()))
-    end
-
-    local listEl = findDescendant(container, "wcStatsWorkerList")
+    -- BUILD 18:26: wcStatsMode / wcStatsWage are gone; the wage MTOs on the same page carry them.
     local rate = settings:getWageRate()
     local intervalHrs = (WorkerSystem and WorkerSystem.BILLED_HOURS_PER_DAY) or 0.5
     local isHourly = (settings.costMode == Settings.COST_MODE_HOURLY)
@@ -641,7 +665,9 @@ local function paintWorkers(container, lightOnly)
             labeled(tr("wc_label_cost_per_worker", "Cost / Worker"), "-"))
         setText(findDescendant(container, "wcStatsTotal"),
             labeled(tr("wc_label_total_interval_cost", "Total Interval"), "-"))
-        setText(listEl, awaitingSyncText())
+        paintRosterRows(container, { awaitingSyncText() })
+        _lastSnap = nil
+        paintRosterButtons(container, nil)
         return
     end
 
@@ -657,7 +683,7 @@ local function paintWorkers(container, lightOnly)
     if workingN > 0 then
         countText = countText .. string.format(tr("wc_rf_pda_crew_working", " · %d working"), workingN)
     end
-    local listText, showingClause = buildWorkersListText(snap)
+    local listLines, showingClause = buildWorkersListText(snap)
     if showingClause ~= nil then
         countText = countText .. " · " .. showingClause
     end
@@ -684,7 +710,43 @@ local function paintWorkers(container, lightOnly)
             labeled(tr("wc_label_total_interval_cost", "Total Interval"), "-"))
     end
 
-    setText(listEl, listText)
+    paintRosterRows(container, listLines)
+    _lastSnap = snap
+    paintRosterButtons(container, snap)
+end
+
+--- BUILD 22:42 (George CLOSED DESIGN 21:26): Hire / Fire from the Esc page. n is the roster ROW of
+--- the last paint: recruits[n] (rows 11-14, wcBtnHire1..4) or workers[n] (rows 1-8, wcBtnFire1..8).
+--- WorkerManager:hireWorker(slot, farmId) / fireWorker(uuid, farmId) are the thin WCNetwork_SendCommand
+--- wrappers (SP and MP, src/WorkerManager.lua); farmId nil = the local farm inside them. The server
+--- enforces the daily hire limit and the roster snapshot comes back on its own, so the repaint here
+--- is a courtesy and the 500ms tick shows the result. Assign / unassign stay off Esc (no vehicle).
+---@param container table|nil rfHostPlaceholder from the host
+---@param n number recruit row 1..4
+function WcRfPdaGuest.onHire(container, n)
+    local mgr = getMgr()
+    local snap = _lastSnap
+    local r = snap ~= nil and snap.recruits ~= nil and snap.recruits[tonumber(n) or 0] or nil
+    if mgr == nil or type(mgr.hireWorker) ~= "function" or r == nil then
+        return
+    end
+    pcall(mgr.hireWorker, mgr, tonumber(r.slot) or 1, nil)
+    paintDashboard(container, true)
+    paintWorkers(container, true)
+end
+
+---@param container table|nil rfHostPlaceholder from the host
+---@param n number crew row 1..8
+function WcRfPdaGuest.onFire(container, n)
+    local mgr = getMgr()
+    local snap = _lastSnap
+    local w = snap ~= nil and snap.workers ~= nil and snap.workers[tonumber(n) or 0] or nil
+    if mgr == nil or type(mgr.fireWorker) ~= "function" or w == nil or w.uuid == nil then
+        return
+    end
+    pcall(mgr.fireWorker, mgr, w.uuid, nil)
+    paintDashboard(container, true)
+    paintWorkers(container, true)
 end
 
 ---@param container table|nil rfHostPlaceholder from Soil RfPdaMenuPage
@@ -693,14 +755,12 @@ function WcRfPdaGuest.onShow(container, lightOnly)
     -- Placement polish: page hero is Soil rfPageTitle/rfPageBlurb only - do not second-paint host title/blurb.
     setText(findDescendant(container, "rfHostBody"), "")
 
-    -- Seed only when missing (arrow path must never re-seed / forceEvent).
-    if not _subnavSeeded then
-        seedSubnav(container)
-    end
-
+    -- BUILD 18:26 (George CLOSED DESIGN 17:59): one page. No subnav seed (the picker is gone,
+    -- wcSubnavSelector stays hidden); the page index is pinned to the merged Dashboard.
     local page = getHostPage()
     if page ~= nil then
-        page.wcSubPageIndex = clampPageIndex(page.wcSubPageIndex)
+        page.wcSubPageIndex = PAGE_DASHBOARD
+        page._wcSubnavSeeded = true
     end
     if page ~= nil and page._syncWcSubPageVisibility then
         page:_syncWcSubPageVisibility()
@@ -712,6 +772,8 @@ function WcRfPdaGuest.onShow(container, lightOnly)
     setVis(findDescendant(container, "wcSideVersion"), false)
     setVis(findDescendant(container, "wcPageAbout"), false)
     paintSideInfo(container)
+    -- BUILD 00:06: idempotent draw wrap for the Reset / Hire / Fire chips.
+    wireWcChipPaint(container)
 
     local idx = getPageIndex(container)
     -- George: first show of a page = full paint; 500ms tick on same page stays light.
@@ -722,15 +784,14 @@ function WcRfPdaGuest.onShow(container, lightOnly)
         page._wcLastFullPaintPage = idx
     end
 
-    if idx == PAGE_WAGES then
-        if fullPaint then
-            syncWageWidgets(container)
-        end
-    elseif idx == PAGE_WORKERS then
-        paintWorkers(container, not fullPaint)
-    else
-        paintDashboard(container, not fullPaint)
+    -- Merged page: the wage widgets sync on the full paint only (same ids, forceEvent=false,
+    -- calls _ensureWcWageArrowsVisible); the stats and the roster repaint on every tick with
+    -- lightOnly = live numbers only.
+    if fullPaint then
+        syncWageWidgets(container)
     end
+    paintDashboard(container, not fullPaint)
+    paintWorkers(container, not fullPaint)
 end
 
 function WcRfPdaGuest.onHide()
@@ -830,6 +891,11 @@ function WcRfPdaGuest.tryRegister()
     if g_currentMission ~= nil and g_wcGui ~= nil then
         g_currentMission.rfWcGui = g_wcGui
     end
+    -- BUILD 22:42: the guest handle on the mission is the belt for the host Hire / Fire
+    -- forwarders (registry field first, this second), the same channel NPC Favor and Market use.
+    if g_currentMission ~= nil then
+        g_currentMission.WcRfPdaGuest = WcRfPdaGuest
+    end
 
     -- Equal Option B: WC may create menuRealisticFarming when Soil absent.
     -- Always ensureDoor when bootstrap class is sourced; never trust bare (WorkerCostsModDirectory or g_currentModDirectory) at callback time.
@@ -865,7 +931,7 @@ function WcRfPdaGuest.tryRegister()
             id = PANEL_ID,
             title = tr("wc_rf_pda_module_title", "Worker Costs"),
             blurb = tr("wc_rf_pda_blurb",
-                "Wage mode, active workers, next settlement estimate. Open Worker Manager for hire and settings."),
+                "Wage mode, active workers, next settlement estimate. Hire and fire here; assign on Farm Tablet."),
             order = PANEL_ORDER,
             isAvailable = function()
                 return getMgr() ~= nil
@@ -874,6 +940,9 @@ function WcRfPdaGuest.tryRegister()
             onHide = WcRfPdaGuest.onHide,
             onWageOptionChanged = WcRfPdaGuest.onWageOptionChanged,
             onWageReset = WcRfPdaGuest.onWageReset,
+            -- BUILD 22:42: carried by RfEscModules.registerModule from this build on.
+            onHire = WcRfPdaGuest.onHire,
+            onFire = WcRfPdaGuest.onFire,
         })
         if ok then
             _registered = true
