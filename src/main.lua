@@ -75,6 +75,7 @@ source(modDirectory .. "src/gui/RfPdaMenuPage.lua")
 source(modDirectory .. "src/gui/RfEscBootstrap.lua")
 -- DEV: Esc UIDebugger (F6). Install no-ops if Soil (or another mod) already registered.
 source(modDirectory .. "src/gui/RfEscUiDebugger.lua")
+source(modDirectory .. "src/gui/WcGuideDialog.lua")
 source(modDirectory .. "src/gui/WcRfPdaGuest.lua")
 source(modDirectory .. "src/gui/WCModGui.lua")
 
