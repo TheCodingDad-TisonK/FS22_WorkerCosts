@@ -883,6 +883,15 @@ function WcRfPdaGuest.standDownLegacyEsc()
     return false
 end
 
+--- BUILD 19:15: the Esc Help footer asks whichever module is showing to open its own guide, so
+--- every companion ships and owns its own help instead of borrowing Soil's.
+---@param container table|nil
+function WcRfPdaGuest.onOpenHelp(container)
+    if WcGuideDialog ~= nil and type(WcGuideDialog.show) == "function" then
+        WcGuideDialog.show()
+    end
+end
+
 function WcRfPdaGuest.tryRegister()
     -- Suite soft-detect: publish the Worker Manager screen on the mission so the
     -- Esc door host (whichever mod built RfPdaMenuPage) can open it from its own
@@ -907,6 +916,12 @@ function WcRfPdaGuest.tryRegister()
                 profilesXml = MOD_DIR .. "xml/gui/rfEscProfiles.xml",
                 iconPath = "textures/ui/menuIcon.dds",
             })
+            -- BUILD 19:15 (George CLOSED DESIGN 18:55 item 5): load this mod's Field Guide at the
+            -- same moment the door itself loads. A GUI loaded from a mod directory later, once the
+            -- mod's own file system context has closed, fails to open.
+            if WcGuideDialog ~= nil and type(WcGuideDialog.register) == "function" then
+                pcall(WcGuideDialog.register, MOD_DIR)
+            end
             if not doorOk then
                 print("[WorkerCosts] WcRfPdaGuest: WARNING ensureDoor failed (will retry)")
             end
@@ -943,6 +958,7 @@ function WcRfPdaGuest.tryRegister()
             -- BUILD 22:42: carried by RfEscModules.registerModule from this build on.
             onHire = WcRfPdaGuest.onHire,
             onFire = WcRfPdaGuest.onFire,
+            onOpenHelp = WcRfPdaGuest.onOpenHelp,
         })
         if ok then
             _registered = true
