@@ -4185,22 +4185,22 @@
     },
     {
       "referrer": "Google",
-      "count": 36,
-      "uniques": 23
+      "count": 33,
+      "uniques": 22
     },
     {
       "referrer": "kingmods.net",
-      "count": 4,
-      "uniques": 4
+      "count": 3,
+      "uniques": 3
+    },
+    {
+      "referrer": "chatgpt.com",
+      "count": 3,
+      "uniques": 2
     },
     {
       "referrer": "search.brave.com",
       "count": 3,
-      "uniques": 1
-    },
-    {
-      "referrer": "Bing",
-      "count": 2,
       "uniques": 1
     },
     {
@@ -4210,11 +4210,6 @@
     },
     {
       "referrer": "Yahoo",
-      "count": 1,
-      "uniques": 1
-    },
-    {
-      "referrer": "chatgpt.com",
       "count": 1,
       "uniques": 1
     },
